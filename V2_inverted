@@ -1,0 +1,121 @@
+//+------------------------------------------------------------------+
+//| Expert Advisor: ThreeCandlesEA Inverted Signals                  |
+//+------------------------------------------------------------------+
+#property strict
+
+#include <Trade/Trade.mqh>
+CTrade trade;
+
+input double RiskPerTrade = 10;  // ریسک ثابت به دلار
+input int Slippage = 3;
+input int ATR_Period = 14;
+input double MinBodyPercent = 0.3; // حداقل درصد بدنه (۳۰٪)
+
+// هندل ATR
+int atrHandle;
+datetime lastTradeBar = 0;
+
+//--------------------------------------------------------------------
+int OnInit()
+{
+   atrHandle = iATR(_Symbol, _Period, ATR_Period);
+   if(atrHandle == INVALID_HANDLE)
+   {
+      Print("Error creating ATR handle");
+      return(INIT_FAILED);
+   }
+   return(INIT_SUCCEEDED);
+}
+//--------------------------------------------------------------------
+void OnDeinit(const int reason)
+{
+   if(atrHandle != INVALID_HANDLE)
+      IndicatorRelease(atrHandle);
+}
+//--------------------------------------------------------------------
+bool isBullish(int i) { return (iClose(_Symbol,_Period,i) > iOpen(_Symbol,_Period,i)); }
+bool isBearish(int i) { return (iClose(_Symbol,_Period,i) < iOpen(_Symbol,_Period,i)); }
+
+// بررسی درصد بدنه کندل
+bool isValidCandle(int i)
+{
+   double high  = iHigh(_Symbol, _Period, i);
+   double low   = iLow(_Symbol, _Period, i);
+   double open  = iOpen(_Symbol, _Period, i);
+   double close = iClose(_Symbol, _Period, i);
+
+   double total = high - low;
+   if(total <= 0) return false;
+
+   double body = MathAbs(close - open);
+   double ratio = body / total;
+
+   return (ratio >= MinBodyPercent);
+}
+
+//--------------------------------------------------------------------
+double CalculateLot(double stopDistance)
+{
+   double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+   double tickSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+
+   if(tickValue <= 0 || tickSize <= 0) return(0);
+
+   double riskPerLot = stopDistance / tickSize * tickValue;
+   double lots = RiskPerTrade / riskPerLot;
+
+   double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+   double lotStep= SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+
+   lots = MathMax(minLot, MathMin(maxLot, lots));
+   lots = MathFloor(lots/lotStep)*lotStep;
+
+   return lots;
+}
+
+//--------------------------------------------------------------------
+void OnTick()
+{
+   if (PositionsTotal() > 0) return;
+
+   datetime currentBarTime = iTime(_Symbol, _Period, 0);
+   if(currentBarTime == lastTradeBar) return;
+
+   double atr[];
+   if (CopyBuffer(atrHandle, 0, 0, 1, atr) <= 0) return;
+   double atrCurrent = atr[0];
+
+   // بررسی 3 کندل آخر: جهت + بدنه معتبر
+   bool bull = (isBullish(3) && isBullish(2) && isBullish(1)
+                && isValidCandle(3) && isValidCandle(2) && isValidCandle(1));
+
+   bool bear = (isBearish(3) && isBearish(2) && isBearish(1)
+                && isValidCandle(3) && isValidCandle(2) && isValidCandle(1));
+
+   // 🔄 برعکس: اگر قبلا Buy می‌گرفت الان Sell می‌گیره
+   if (bull && iClose(_Symbol,_Period,1) > iHigh(_Symbol,_Period,2))
+   {
+      double price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      double sl    = price + atrCurrent;
+      double tp    = price - atrCurrent;
+      double stopDistance = sl - price;
+      double lots = CalculateLot(stopDistance);
+
+      if(lots > 0 && trade.Sell(lots, _Symbol, price, sl, tp, "Inverted Sell - Bullish Pattern"))
+         lastTradeBar = currentBarTime;
+   }
+
+   // 🔄 برعکس: اگر قبلا Sell می‌گرفت الان Buy می‌گیره
+   if (bear && iClose(_Symbol,_Period,1) < iLow(_Symbol,_Period,2))
+   {
+      double price = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      double sl    = price - atrCurrent;
+      double tp    = price + atrCurrent;
+      double stopDistance = price - sl;
+      double lots = CalculateLot(stopDistance);
+
+      if(lots > 0 && trade.Buy(lots, _Symbol, price, sl, tp, "Inverted Buy - Bearish Pattern"))
+         lastTradeBar = currentBarTime;
+   }
+}
